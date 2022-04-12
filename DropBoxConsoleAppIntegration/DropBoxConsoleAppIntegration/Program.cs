@@ -12,13 +12,15 @@ namespace DropboxApiIntegration
 {
     internal class Program
     {
-        private const string AppKey = "zfqeuqnz61da45m";
-        private const string AppSecret = "3k7chm34wgaf914";
-        private const string LoopbackHost = "http://localhost:8080/oauth2/";
+        private const string AppKey = "e3ghrchxlntamu0";
+        private const string AppSecret = "cx8ycmlqov11ut6";
+        private const string LoopbackHost = "http://localhost:52475/oauth2/";
 
         static void Main(string[] args)
         {
-            var helper = new DropboxService(AppKey, AppSecret, LoopbackHost);
+            string refreshToken = "AT6W_GWCO4QAAAAAAAAAAVsnXLsb8rtKFGb-nNwe0zsqOtePgBCTuj1JXFISUrMx";
+            var helper = new DropboxService(AppKey, AppSecret, LoopbackHost, refreshToken);
+            //var helper = new DropboxService(AppKey, AppSecret, LoopbackHost);
 
             var files = helper.ListFiles().Result;
             files.ToList().ForEach(f => Console.WriteLine(f));

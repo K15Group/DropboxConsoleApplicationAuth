@@ -1,9 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Dynamic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Dropbox.Api;
 using Dropbox.Api.Files;
@@ -32,15 +35,16 @@ namespace DropboxApiIntegration
         /// <param name="appKey">App key in dropbox</param>
         /// <param name="appSecret">App secret in dropbox</param>
         /// <param name="loopbackHost">Redirect URI without the ending authorize</param>
-        public DropboxService(string appKey, string appSecret, string loopbackHost)
+        public DropboxService(string appKey, string appSecret, string loopbackHost, string refreshToken = null)
         {
             this.appKey = appKey;
             this.appSecret = appSecret;
             this.loopbackHost = loopbackHost;
+            this.refreshToken = refreshToken;
             redirectUri = new Uri(loopbackHost + "authorize");
             jsRedirectUri = new Uri(loopbackHost + "token");
 
-            GetAccessToken().Wait();
+            RefreshAccessToken().Wait();
 
             client = new DropboxClient(accessToken);
         }
@@ -59,17 +63,10 @@ namespace DropboxApiIntegration
         #region Functions
         public async Task<IEnumerable<string>> ListFiles()
         {
-            try
-            {
-                var items = await client.Files.ListFolderAsync(string.Empty, true);
-                return items.Entries
-                    .Where(i => i.IsFile)
-                    .Select(i => i.PathDisplay);
-            }
-            catch (Exception ex)
-            {
-                throw ex;
-            }
+            var items = await client.Files.ListFolderAsync(string.Empty, true);
+            return items.Entries
+                .Where(i => i.IsFile)
+                .Select(i => i.PathDisplay);
         }
 
         public async Task<IEnumerable<string>> SeachFiles(string fileName)
@@ -129,35 +126,29 @@ namespace DropboxApiIntegration
 
         private async Task<OAuth2Response> HandleJSRedirect(HttpListener http, string state)
         {
-            try
+            var context = await http.GetContextAsync();
+
+            // We only care about request to TokenRedirectUri endpoint.
+            while (context.Request.Url.AbsolutePath != jsRedirectUri.AbsolutePath)
             {
-                var context = await http.GetContextAsync();
-
-                // We only care about request to TokenRedirectUri endpoint.
-                while (context.Request.Url.AbsolutePath != jsRedirectUri.AbsolutePath)
-                {
-                    context = await http.GetContextAsync();
-                }
-
-                var redirectUri = new Uri(context.Request.QueryString["url_with_fragment"]);
-
-                var tokenResult = await DropboxOAuth2Helper.ProcessCodeFlowAsync(redirectUri, appKey, appSecret, redirectUri: this.redirectUri.ToString(), state: state);
-
-                string responseString = $"Get accessToken successfully";
-                byte[] buffer = Encoding.UTF8.GetBytes(responseString);
-
-                var response = context.Response;
-                response.ContentLength64 = buffer.Length;
-                var output = response.OutputStream;
-                output.Write(buffer, 0, buffer.Length);
-                output.Close();
-
-                return tokenResult;
+                context = await http.GetContextAsync();
             }
-            catch (Exception ex)
-            {
-                throw ex;
-            }
+
+            var redirectUri = new Uri(context.Request.QueryString["url_with_fragment"]);
+
+            var tokenResult = await DropboxOAuth2Helper.ProcessCodeFlowAsync(redirectUri, appKey, appSecret, redirectUri: this.redirectUri.ToString(), state: state);
+
+            string responseString = $"Get accessToken successfully";
+            byte[] buffer = Encoding.UTF8.GetBytes(responseString);
+
+            var response = context.Response;
+            response.ContentLength64 = buffer.Length;
+            var output = response.OutputStream;
+            output.Write(buffer, 0, buffer.Length);
+            output.Close();
+
+            return tokenResult;
+
         }
 
         private async Task GetAccessToken()
@@ -168,7 +159,7 @@ namespace DropboxApiIntegration
             var http = new HttpListener();
             http.Prefixes.Add(loopbackHost);
             http.Start();
-            System.Diagnostics.Process.Start(authorizeUri.ToString());
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(authorizeUri.ToString()) { UseShellExecute = true });
 
             // Handle OAuth redirect and send URL fragment to local server using JS.
             await HandleOAuth2Redirect(http);
@@ -177,6 +168,37 @@ namespace DropboxApiIntegration
 
             accessToken = result.AccessToken;
             refreshToken = result.RefreshToken;
+        }
+
+        private async Task RefreshAccessToken()
+        {
+            if (string.IsNullOrEmpty(refreshToken))
+            {
+                await GetAccessToken();
+                return;
+            }
+
+            var url = "https://api.dropbox.com/oauth2/token";
+            var http = new HttpClient();
+            http.BaseAddress = new Uri(url);
+
+            var parameters = new Dictionary<string, string>
+                {
+                    { "refresh_token", refreshToken },
+                    { "grant_type", "refresh_token" }
+                };
+            var bodyContent = new FormUrlEncodedContent(parameters);
+
+            var authenticationString = $"{appKey}:{appSecret}";
+            var base64EncodedAuthenticationString = Convert.ToBase64String(System.Text.ASCIIEncoding.ASCII.GetBytes(authenticationString));
+            http.DefaultRequestHeaders.Add("Authorization", $"Basic {base64EncodedAuthenticationString}");
+
+            var response = await http.PostAsync(url, bodyContent);
+            response.EnsureSuccessStatusCode();
+
+            string responseBody = await response.Content.ReadAsStringAsync();
+            dynamic content = JsonSerializer.Deserialize<ExpandoObject>(responseBody);
+            accessToken = content.access_token.ToString();
         }
         #endregion
     }
